@@ -2,7 +2,7 @@ require File.join(File.expand_path(File.dirname(__FILE__)), '/helper')
 
 class TestResqueMultiJobForks < Test::Unit::TestCase
   def setup
-    $SEQUENCE = []
+    $SEQUENCE_STORE.clear!
     Resque.redis.flushdb
     @worker = Resque::Worker.new(:jobs)
   end
@@ -25,7 +25,7 @@ class TestResqueMultiJobForks < Test::Unit::TestCase
     # test the sequence is correct.
     assert_equal([:before_fork, :after_fork, :work_1, :work_2, :work_3,
                   :before_child_exit_3, :before_fork, :after_fork, :work_4,
-                  :before_child_exit_1], $SEQUENCE, 'correct sequence')
+                  :before_child_exit_1], $SEQUENCE_STORE.all, 'correct sequence')
   end
 
   # test we can also limit fork job process by a job limit.
@@ -41,14 +41,14 @@ class TestResqueMultiJobForks < Test::Unit::TestCase
     rescue Timeout::Error
     end
 
-    assert_equal :before_fork, $SEQUENCE[0], 'first before_fork call.'
-    assert_equal :after_fork, $SEQUENCE[1], 'first after_fork call.'
-    assert_equal :work_20, $SEQUENCE[21], '20th chunk of work.'
-    assert_equal :before_child_exit_20, $SEQUENCE[22], 'first before_child_exit call.'
-    assert_equal :before_fork, $SEQUENCE[23], 'final before_fork call.'
-    assert_equal :after_fork, $SEQUENCE[24], 'final after_fork call.'
-    assert_equal :work_40, $SEQUENCE[44], '40th chunk of work.'
-    assert_equal :before_child_exit_20, $SEQUENCE[45], 'final before_child_exit call.'
+    assert_equal :before_fork, $SEQUENCE_STORE[0], 'first before_fork call.'
+    assert_equal :after_fork, $SEQUENCE_STORE[1], 'first after_fork call.'
+    assert_equal :work_20, $SEQUENCE_STORE[21], '20th chunk of work.'
+    assert_equal :before_child_exit_20, $SEQUENCE_STORE[22], 'first before_child_exit call.'
+    assert_equal :before_fork, $SEQUENCE_STORE[23], 'final before_fork call.'
+    assert_equal :after_fork, $SEQUENCE_STORE[24], 'final after_fork call.'
+    assert_equal :work_40, $SEQUENCE_STORE[44], '40th chunk of work.'
+    assert_equal :before_child_exit_20, $SEQUENCE_STORE[45], 'final before_child_exit call.'
   end
 
   def teardown

@@ -50,13 +50,40 @@ end
 
 # stores a record of the job processing sequence.
 # you may wish to reset this in the test `setup` method.
-$SEQUENCE = []
+
+class SequenceStore
+  def initialize
+    @redis_key = "sequence_store_#{srand}".to_sym
+    clear!
+  end
+
+  def clear!
+    Resque.redis.del(@redis_key)
+  end
+
+  def push(entry)
+    Resque.redis.rpush(@redis_key, entry)
+  end
+
+  def all to_sym = true
+    entries = Resque.redis.lrange(@redis_key, 0, -1)
+    entries = entries.map(&:to_sym) if to_sym
+    entries
+  end
+
+  def [](key)
+    entry = Resque.redis.lrange(@redis_key, key.to_i, key.to_i).first
+    entry.nil? ? nil : entry.to_sym
+  end
+end
+
+$SEQUENCE_STORE = SequenceStore.new
 
 # test job, tracks sequence.
 class SequenceJob
   @queue = :jobs
   def self.perform(i)
-    $SEQUENCE << "work_#{i}".to_sym
+    $SEQUENCE_STORE.push "work_#{i}".to_sym
     sleep(2)
   end
 end
@@ -64,20 +91,19 @@ end
 class QuickSequenceJob
   @queue = :jobs
   def self.perform(i)
-    $SEQUENCE << "work_#{i}".to_sym
+    $SEQUENCE_STORE.push "work_#{i}".to_sym
   end
 end
 
-
 # test hooks, tracks sequence.
 Resque.after_fork do
-  $SEQUENCE << :after_fork
+  $SEQUENCE_STORE.push :after_fork
 end
 
 Resque.before_fork do
-  $SEQUENCE << :before_fork
+  $SEQUENCE_STORE.push :before_fork
 end
 
 Resque.before_child_exit do |worker|
-  $SEQUENCE << "before_child_exit_#{worker.jobs_processed}".to_sym
+  $SEQUENCE_STORE.push "before_child_exit_#{worker.jobs_processed}".to_sym
 end

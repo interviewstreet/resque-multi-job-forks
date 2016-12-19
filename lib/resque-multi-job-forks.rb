@@ -9,14 +9,15 @@ module Resque
     attr_accessor :jobs_per_fork
     attr_accessor :memory_threshold
     attr_reader   :jobs_processed
+    attr_accessor :job_check_interval
 
     def self.multi_jobs_per_fork?
-      ENV["DISABLE_MULTI_JOBS_PER_FORK"].nil?
+      !ENV["ENABLE_MULTI_JOBS_PER_FORK"].nil?
     end
 
     if multi_jobs_per_fork? && !method_defined?(:shutdown_without_multi_job_forks)
-      def perform_with_multi_job_forks(job = nil)
-        perform_without_multi_job_forks(job)
+      def perform_with_multi_job_forks(job = nil, &block)
+        perform_without_multi_job_forks(job, &block)
         hijack_fork unless fork_hijacked?
         @jobs_processed += 1
       end
@@ -49,7 +50,7 @@ module Resque
         working_on_without_worker_registration(job)
       end
       alias_method :working_on_without_worker_registration, :working_on
-      alias_method :working_on, :working_on_with_worker_registration    
+      alias_method :working_on, :working_on_with_worker_registration
 
       # Reconnect only once
       def reconnect_with_multi_job_forks
@@ -60,6 +61,66 @@ module Resque
       end
       alias_method :reconnect_without_multi_job_forks, :reconnect
       alias_method :reconnect, :reconnect_with_multi_job_forks
+
+      def work(interval = 5.0, &block)
+        interval = Float(interval)
+        @job_check_interval = interval
+        startup
+
+        work_loop(interval, &block)
+
+        unregister_worker
+      rescue Exception => exception
+        return if exception.class == SystemExit && !@child && run_at_exit_hooks
+        log_with_severity :error, "Failed to start worker : #{exception.inspect}"
+        unregister_worker(exception)
+      end
+
+      def work_loop interval = 5.0, &block
+        loop do
+          break if shutdown?
+
+          unless work_one_job(&block)
+            break if interval.zero?
+            log_with_severity :debug, "Sleeping for #{interval} seconds"
+            procline paused? ? "Paused" : "Waiting for #{queues.join(',')}"
+            sleep interval
+          end
+        end
+      end
+
+      private
+
+      def perform_with_fork(job, &block)
+        run_hook :before_fork, job
+
+        begin
+          @child = fork do
+            unregister_signal_handlers if term_child
+            perform(job, &block)
+            work_loop(job_check_interval, &block)
+            exit! unless run_at_exit_hooks
+          end
+        rescue NotImplementedError
+          @fork_per_job = false
+          perform(job, &block)
+          return
+        end
+
+        srand # Reseeding
+        procline "Forked #{@child} at #{Time.now.to_i}"
+
+        begin
+          Process.waitpid(@child)
+        rescue SystemCallError
+          nil
+        end
+
+        job.fail(DirtyExit.new("Child process received unhandled signal #{$?.stopsig}")) if $?.signaled?
+        @child = nil
+      end
+
+      public
     end
 
     # Need to tell the child to shutdown since it might be looping performing multiple jobs per fork
@@ -87,6 +148,7 @@ module Resque
       @release_fork_limit = fork_job_limit
       @jobs_processed = 0
       @cant_fork = true
+      @fork_per_job = false
       trap('TSTP') { shutdown }
     end
 
@@ -95,8 +157,9 @@ module Resque
       run_hook :before_child_exit, self
       Resque.after_fork, Resque.before_fork = *@suppressed_fork_hooks
       @release_fork_limit = @jobs_processed = @cant_fork = nil
+      remove_instance_variable(:@fork_per_job) if defined?(@fork_per_job)
       log 'hijack over, counter terrorists win.'
-      @shutdown = true unless $TESTING
+      @shutdown = true
     end
 
     def fork_job_limit
@@ -131,7 +194,6 @@ module Resque
       @memory_threshold ||= ENV["RESQUE_MEM_THRESHOLD"].to_i
       @memory_threshold > 0 && @memory_threshold
     end
-
   end
 
   # the `before_child_exit` hook will run in the child process
